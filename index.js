@@ -1,7 +1,12 @@
 require('dotenv').config();
 
 const Discord = require('discord.js');
-const client = new Discord.Client();
+const client = new Discord.Client({
+  partials: [
+    'MESSAGE',
+    'REACTION'
+  ]
+});
 
 const TOKEN = process.env.TOKEN;
 if (!process.env.TOKEN) {
@@ -19,7 +24,7 @@ client.on('ready', () => {
   console.log(`Logged in as ${client.user.tag}!`);
   getRoleMessage().then(roleMsg => {
     updateRoleMsgText(roleMsg);
-    startRoleMsgListener();
+    checkEmojis(roleMsg);
   }).catch(error => {
     console.warn("Could not start bot with self role message", error)
   });
@@ -37,7 +42,7 @@ client.on('message', msg => {
               db.set('roleMsgChannelId', roleMsg.channel.id).write();
               db.set('roleMsgId', roleMsg.id).write();
               updateRoleMsgText(roleMsg);
-              startRoleMsgListener();
+              checkEmojis(roleMsg);
               msg.reply("Set Up!").then(setUpMsg => {
                 setUpMsg.delete({ timeout: 1000 });
                 msg.delete({ timeout: 1000 });
@@ -74,6 +79,7 @@ client.on('message', msg => {
                       msg.reply("Added club!");
                       getRoleMessage().then(roleMsg => {
                         updateRoleMsgText(roleMsg);
+                        roleMsg.react(emoji);
                       });
                     }).catch(() => {
                       msg.reply("Invalid club!");
@@ -93,6 +99,7 @@ client.on('message', msg => {
                     msg.reply("Club removed!");
                     getRoleMessage().then(roleMsg => {
                       updateRoleMsgText(roleMsg);
+                      checkEmojis(roleMsg);
                     });
                   } else {
                     msg.reply("Can't remove a club that's already not there");
@@ -112,6 +119,71 @@ client.on('message', msg => {
         help(msg);
       }
     }
+  }
+});
+
+client.on('messageReactionAdd', async (reaction, user) => {
+	// When we receive a reaction we check if the reaction is partial or not
+	if (reaction.partial) {
+		// If the message this reaction belongs to was removed the fetching might result in an API error, which we need to handle
+		try {
+			await reaction.fetch();
+		} catch (error) {
+			console.error('Something went wrong when fetching the message: ', error);
+			// Return as `reaction.message.author` may be undefined/null
+			return;
+		}
+	}
+  
+  if (reaction.message.id === db.get('roleMsgId').value()) {
+    getRoleMessage().then(roleMsg => {
+      let emoji = reaction.emoji.name;
+      let role = db.get('clubs').find({ emoji: emoji }).value();
+      if (!role) return reaction.remove();
+      let roleId = role.roleId;
+
+      // Get user reactions
+      reaction.users.fetch().then(reactors => {
+        reactors.map(reactor => {
+          if (reactor.bot) {
+            // let nonPresentEmojiIndex = nonPresentEmojis.indexOf(role.emoji);
+            // if (nonPresentEmojiIndex > -1) {
+            //   nonPresentEmojis.splice(nonPresentEmojiIndex, 1);
+            // }
+            return;
+          }
+          roleMsg.guild.members.fetch(reactor.id).then(reactorMember => {
+            var hasRole = false;
+            reactorMember.roles.cache.map(reactorRole => {
+              if (reactorRole.id === roleId) hasRole = true;
+            });
+            if (hasRole) {
+              reactorMember.roles.remove(roleId).then(() => {
+                reaction.users.remove(reactor).catch(error => {
+                  console.warn("Failed to remove reaction of reactor", error);
+                });
+              }).catch(error => {
+                console.warn("Failed to remove role from reactor", error);
+              });
+            } else {
+              reactorMember.roles.add(roleId).then(() => {
+                reaction.users.remove(reactor).catch(error => {
+                  console.warn("Failed to remove reaction of reactor", error);
+                });
+              }).catch(error => {
+                console.warn("Failed to add role to reactor", error);
+              });
+            }
+          }).catch(error => {
+            console.warn("Failed to get GuildMember of reactor", error);
+          });
+        });
+      }).catch(error => {
+        console.warn("Couldn't get reactors", error);
+      });
+    }).catch(error => {
+      console.warn("Listener couldn't get roleMsg", error);
+    });
   }
 });
 
@@ -147,75 +219,33 @@ function updateRoleMsgText(msg) {
   });
 }
 
-var roleMsgListener;
-function startRoleMsgListener() {
-  if (!roleMsgListener) {
-    roleMsgListener = setInterval(checkRoleMsgRoles, 500)
-  }
-}
+function checkEmojis(roleMsg) {
+  let nonPresentEmojis = db.get('clubs').map('emoji').value();
 
-function checkRoleMsgRoles() {
-  getRoleMessage().then(roleMsg => {
-    let nonPresentEmojis = db.get('clubs').map('emoji').value();
+  roleMsg.reactions.cache.map((reaction) => {
+    let emoji = reaction.emoji.name;
+    let role = db.get('clubs').find({ emoji: emoji }).value();
+    if (!role) return reaction.remove();
+    let roleId = role.roleId;
 
-    roleMsg.reactions.cache.map((reaction) => {
-      let emoji = reaction.emoji.name;
-      let role = db.get('clubs').find({ emoji: emoji }).value();
-      if (!role) return reaction.remove();
-      let roleId = role.roleId;
-
-      // Get user reactions
-      reaction.users.fetch().then(reactors => {
-        reactors.map(reactor => {
-          if (reactor.bot) {
-            let nonPresentEmojiIndex = nonPresentEmojis.indexOf(role.emoji);
-            if (nonPresentEmojiIndex > -1) {
-              nonPresentEmojis.splice(nonPresentEmojiIndex, 1);
-            }
-            return;
+    reaction.users.fetch().then(reactors => {
+      reactors.map(reactor => {
+        if (reactor.bot) {
+          let nonPresentEmojiIndex = nonPresentEmojis.indexOf(role.emoji);
+          if (nonPresentEmojiIndex > -1) {
+            nonPresentEmojis.splice(nonPresentEmojiIndex, 1);
           }
-          roleMsg.guild.members.fetch(reactor.id).then(reactorMember => {
-            var hasRole = false;
-            reactorMember.roles.cache.map(reactorRole => {
-              if (reactorRole.id === roleId) hasRole = true;
-            });
-            if (hasRole) {
-              reactorMember.roles.remove(roleId).then(() => {
-                reaction.users.remove(reactor).catch(error => {
-                  console.warn("Failed to remove reaction of reactor", error);
-                });
-              }).catch(error => {
-                console.warn("Failed to remove role from reactor", error);
-              });
-            } else {
-              reactorMember.roles.add(roleId).then(() => {
-                reaction.users.remove(reactor).catch(error => {
-                  console.warn("Failed to remove reaction of reactor", error);
-                });
-              }).catch(error => {
-                console.warn("Failed to add role to reactor", error);
-              });
-            }
-          }).catch(error => {
-            console.warn("Failed to get GuildMember of reactor", error);
-          });
-        });
-      }).catch(error => {
-        console.warn("Couldn't get reactors", error);
+        }
       });
     });
-
-    // Add roles not present
-    for (let i = 0; i < nonPresentEmojis.length; i++) {
-      roleMsg.react(nonPresentEmojis[i]).catch(error => {
-        console.warn("Bot failed to react to roleMsg with " + nonPresentEmojis[i].emoji, error);
-      });
-    }
-
-    // clearInterval(roleMsgListener);
-  }).catch(error => {
-    console.warn("roleMsgListener couldn't get roleMsg", error);
   });
+
+  // Add roles not present
+  for (let i = 0; i < nonPresentEmojis.length; i++) {
+    roleMsg.react(nonPresentEmojis[i]).catch(error => {
+      console.warn("Bot failed to react to roleMsg with " + nonPresentEmojis[i].emoji, error);
+    });
+  }
 }
 
 function help(msg) {
